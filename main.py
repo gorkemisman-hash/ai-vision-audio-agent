@@ -12,21 +12,26 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # FastAPI uygulamasını başlatır
-app = FastAPI(title="AI Vision & Audio Agent API")
+app = FastAPI(title="Multimodal AI Agent API (Vision, Audio, Docs)")
 
-# Dışarıdan gelecek görsel isteğinin modelini tanımlar
-class AgentRequest(BaseModel):
+# --- Veri Modelleri ---
+class ImageAgentRequest(BaseModel):
     image_url: str
     prompt: str
 
-# Dışarıdan gelecek ses isteğinin modelini tanımlar
 class AudioAgentRequest(BaseModel):
     audio_url: str
     prompt: str
 
-# /analyze-image adresine POST isteği geldiğinde bu fonksiyon çalışır
+class DocumentAgentRequest(BaseModel):
+    doc_url: str
+    prompt: str
+
+# --- API Endpoint'leri ---
+
 @app.post("/analyze-image")
-def analyze_image(request: AgentRequest):
+def analyze_image(request: ImageAgentRequest):
+    """Görsel URL'sini alıp Gemini ile analiz eder."""
     image_url = request.image_url
     user_prompt = request.prompt
 
@@ -34,44 +39,24 @@ def analyze_image(request: AgentRequest):
         raise HTTPException(status_code=400, detail="image_url ve prompt alanları zorunludur.")
 
     try:
-        # Kendimizi normal bir tarayıcı gibi tanıtmak için headers ekliyoruz
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-        }
-        # isteği bu header ile birlikte gönderiyoruz
+        headers = {'User-Agent': 'Mozilla/5.0'}
         image_response = requests.get(image_url, headers=headers)
-        image_response.raise_for_status() # Hata varsa yakala (4xx, 5xx)
+        image_response.raise_for_status()
         image_bytes = image_response.content
 
-        # Gemini Vision modelini hazırlar
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
-
-        # Gemini'a göndereceğimiz içeriği oluşturur
-        content = [
-            user_prompt,
-            {
-                'mime_type': image_response.headers.get('Content-Type', 'image/jpeg'),
-                'data': image_bytes
-            }
-        ]
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        image_part = {'mime_type': image_response.headers.get('Content-Type', 'image/jpeg'), 'data': image_bytes}
         
-        # API'ye isteği gönderir
-        response = model.generate_content(content)
-        
-        # Sonucu JSON olarak geri döndürür
+        response = model.generate_content([user_prompt, image_part])
         return {"response": response.text}
 
-    except requests.exceptions.RequestException as e:
-        print(f"HATA OLUŞTU (GÖRSEL İNDİRME): {e}") 
-        raise HTTPException(status_code=500, detail=f"Görsel indirilirken hata oluştu: {e}")
     except Exception as e:
-        print(f"HATA OLUŞTU (GENEL): {e}") 
-        raise HTTPException(status_code=500, detail=f"Gemini API hatası: {e}")
+        print(f"HATA (GÖRSEL ANALİZİ): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# --- YENİ EKLENEN SES ANALİZİ FONKSİYONU ---
 @app.post("/analyze-audio")
 def analyze_audio(request: AudioAgentRequest):
+    """Ses URL'sini alıp Gemini ile analiz eder."""
     audio_url = request.audio_url
     user_prompt = request.prompt
 
@@ -79,33 +64,43 @@ def analyze_audio(request: AudioAgentRequest):
         raise HTTPException(status_code=400, detail="audio_url ve prompt alanları zorunludur.")
 
     try:
-        # Sesi URL'den indir
-        print("Ses dosyası indiriliyor...")
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         audio_response = requests.get(audio_url, headers=headers)
         audio_response.raise_for_status()
         audio_bytes = audio_response.content
-        print("İndirme tamamlandı.")
 
-        # Gemini modelini hazırla
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        audio_part = {'mime_type': audio_response.headers.get('Content-Type', 'audio/ogg'), 'data': audio_bytes}
 
-        # Gemini'a gönderilecek içeriği oluştur
-        audio_part = {
-            # WhatsApp sesli notları genellikle .ogg formatındadır, ama ManyChat'in linki farklı olabilir.
-            # MIME type'ı dinamik olarak almak en iyisidir, ancak şimdilik genel bir varsayım yapabiliriz.
-            'mime_type': audio_response.headers.get('Content-Type', 'audio/ogg'),
-            'data': audio_bytes
-        }
-
-        print("Gemini'a ses analizi isteği gönderiliyor...")
         response = model.generate_content([user_prompt, audio_part])
-        print("Cevap alındı.")
-
         return {"response": response.text}
 
     except Exception as e:
-        print(f"HATA OLUŞTU (SES ANALİZİ): {e}")
-        raise HTTPException(status_code=500, detail=f"Ses analizi sırasında hata oluştu: {e}")
+        print(f"HATA (SES ANALİZİ): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/analyze-document")
+def analyze_document(request: DocumentAgentRequest):
+    """Doküman URL'sini alıp Gemini ile analiz eder."""
+    doc_url = request.doc_url
+    user_prompt = request.prompt
+
+    if not doc_url or not user_prompt:
+        raise HTTPException(status_code=400, detail="doc_url ve prompt alanları zorunludur.")
+
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        doc_response = requests.get(doc_url, headers=headers)
+        doc_response.raise_for_status()
+        doc_bytes = doc_response.content
+
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        document_part = {'mime_type': doc_response.headers.get('Content-Type', 'application/pdf'), 'data': doc_bytes}
+
+        response = model.generate_content([user_prompt, document_part])
+        return {"response": response.text}
+
+    except Exception as e:
+        print(f"HATA (DOKÜMAN ANALİZİ): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
