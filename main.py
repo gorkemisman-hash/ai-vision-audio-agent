@@ -4,6 +4,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # .env dosyasındaki değişkenleri yükler
 load_dotenv()
@@ -27,6 +28,14 @@ class DocumentAgentRequest(BaseModel):
     doc_url: str
     prompt: str
 
+# --- GÜVENLİK FİLTRELERİ (Estetik/Tıbbi Görseller İçin Kapatıldı) ---
+safety_settings = {
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
 # --- API Endpoint'leri ---
 
 @app.post("/analyze-image")
@@ -45,14 +54,26 @@ def analyze_image(request: ImageAgentRequest):
         image_bytes = image_response.content
 
         model = genai.GenerativeModel('gemini-2.5-flash')
-        image_part = {'mime_type': image_response.headers.get('Content-Type', 'image/jpeg'), 'data': image_bytes}
+        # MIME type otomatik alınır, alınamazsa jpeg varsayılır
+        mime_type = image_response.headers.get('Content-Type', 'image/jpeg')
+        image_part = {'mime_type': mime_type, 'data': image_bytes}
         
-        response = model.generate_content([user_prompt, image_part])
+        # Güvenlik ayarları ile modeli çağırıyoruz
+        response = model.generate_content(
+            [user_prompt, image_part],
+            safety_settings=safety_settings
+        )
+
+        # Gemini inat edip görseli yine de bloklarsa sistem çökmesin diye kontrol ediyoruz
+        if not response.candidates or not response.parts:
+            return {"response": "Yapay zeka sistemi, bu görseli tıbbi güvenlik filtreleri nedeniyle analiz edemedi. Lütfen işlemi manuel olarak devam ettirin."}
+
         return {"response": response.text}
 
     except Exception as e:
         print(f"HATA (GÖRSEL ANALİZİ): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Sunucu 500 hatası vermek yerine Make.com'a kontrollü bir hata döner
+        return {"response": "Görsel analiz edilemedi. Sistem görseli işleyemedi veya sunucu hatasına takıldı."}
 
 @app.post("/analyze-audio")
 def analyze_audio(request: AudioAgentRequest):
@@ -70,14 +91,18 @@ def analyze_audio(request: AudioAgentRequest):
         audio_bytes = audio_response.content
 
         model = genai.GenerativeModel('gemini-2.5-flash')
-        audio_part = {'mime_type': audio_response.headers.get('Content-Type', 'audio/ogg'), 'data': audio_bytes}
+        
+        # Instagram'dan mp4, WhatsApp'tan ogg gelebilir. Dinamik MIME type algılama eklendi.
+        mime_type = audio_response.headers.get('Content-Type', 'audio/ogg')
+        audio_part = {'mime_type': mime_type, 'data': audio_bytes}
 
         response = model.generate_content([user_prompt, audio_part])
         return {"response": response.text}
 
     except Exception as e:
         print(f"HATA (SES ANALİZİ): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 500 verip çökmek yerine asistanın "anlayamadım" demesi için kontrollü dönüş
+        return {"response": "[DİL]: Belirsiz [DEŞİFRE]: (Ses kaydı teknik bir nedenden dolayı işlenemedi) [ÖZET]: Ses kaydı açılamadı."}
 
 @app.post("/analyze-document")
 def analyze_document(request: DocumentAgentRequest):
@@ -102,5 +127,4 @@ def analyze_document(request: DocumentAgentRequest):
 
     except Exception as e:
         print(f"HATA (DOKÜMAN ANALİZİ): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+        return {"response": "Doküman analiz edilemedi, lütfen tekrar deneyin."}
